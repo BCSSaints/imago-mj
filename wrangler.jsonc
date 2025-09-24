@@ -1,7 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "teen-ai-platform",
-  "main": "src/index.tsx",
   "compatibility_date": "2024-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "pages_build_output_dir": "./dist",
@@ -10,15 +9,7 @@
     {
       "binding": "DB",
       "database_name": "teen-ai-platform-production",
-      "database_id": "your-database-id-will-be-here"
-    }
-  ],
-
-  "kv_namespaces": [
-    {
-      "binding": "KV", 
-      "id": "your-kv-id",
-      "preview_id": "your-kv-preview-id"
+      "database_id": "3f767c4b-3b59-45a6-bf43-fa1a7ec7f0c1"
     }
   ]
 }
