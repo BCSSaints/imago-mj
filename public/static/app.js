@@ -139,8 +139,13 @@ class TeenAIApp {
     }
   }
 
-  async startConversation(customGptId, title) {
+  async startConversation(customGptId, firstMessage) {
     try {
+      // Auto-generate title from first message
+      const title = firstMessage.length > 50 ? 
+        firstMessage.substring(0, 47) + '...' : 
+        firstMessage;
+
       const result = await this.apiCall('/api/conversations', {
         method: 'POST',
         data: { customGptId, title }
@@ -155,6 +160,9 @@ class TeenAIApp {
         };
         this.currentView = 'chat';
         this.render();
+        
+        // Immediately send the first message
+        await this.sendMessage(firstMessage);
       }
     } catch (error) {
       console.error('Failed to start conversation:', error);
@@ -196,8 +204,8 @@ class TeenAIApp {
         });
         this.renderChat();
 
-        // Speak the AI response if voice mode is available
-        if (voiceMode && voiceMode.synthesis) {
+        // Speak the AI response if voice mode is available (but only if user initiated voice mode)
+        if (voiceMode && voiceMode.synthesis && voiceMode.shouldSpeak) {
           voiceMode.speak(result.aiMessage.content);
         }
 
@@ -854,9 +862,9 @@ class TeenAIApp {
 
 // Global helper functions
 function startNewConversation(customGptId, gptName) {
-  const title = prompt('Enter a title for this conversation:');
-  if (title) {
-    app.startConversation(customGptId, title);
+  const firstMessage = prompt(`What would you like to ask ${gptName}?`);
+  if (firstMessage && firstMessage.trim()) {
+    app.startConversation(customGptId, firstMessage.trim());
   }
 }
 
@@ -879,6 +887,7 @@ class VoiceMode {
     this.recognition = null;
     this.synthesis = window.speechSynthesis;
     this.currentVoice = null;
+    this.shouldSpeak = false; // Only speak when user explicitly uses voice mode
     
     this.initializeSpeechRecognition();
     this.initializeSpeechSynthesis();
@@ -961,11 +970,18 @@ class VoiceMode {
   handleSpeechResult(transcript) {
     console.log('Voice input:', transcript);
     
-    // Insert the transcript into the message input
+    // Set flag to speak responses when using voice input
+    this.shouldSpeak = true;
+    
+    // Insert the transcript into the message input and submit
     const messageInput = document.getElementById('messageInput');
     if (messageInput) {
       messageInput.value = transcript;
-      messageInput.focus();
+      // Auto-submit the voice message
+      const chatForm = document.getElementById('chatForm');
+      if (chatForm) {
+        chatForm.dispatchEvent(new Event('submit'));
+      }
     }
   }
 
@@ -1014,6 +1030,8 @@ class VoiceMode {
     if (this.isRecording) {
       this.stopRecording();
     } else {
+      // Reset speak flag when starting new voice session
+      this.shouldSpeak = false;
       this.startRecording();
     }
   }

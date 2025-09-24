@@ -29,6 +29,46 @@ function isValidEmail(email: string): boolean {
   return emailRegex.test(email)
 }
 
+function generateEnhancedFallback(content: string, isFlagged: boolean = false): string {
+  if (isFlagged) {
+    return "I notice you might be going through something difficult. Remember that God loves you deeply, and there are people who care about you. If you're struggling, please talk to a trusted adult like your parents, a teacher, or a counselor. Is there something positive I can help you with instead?"
+  }
+  
+  const lowerContent = content.toLowerCase();
+  
+  if (lowerContent.includes('math') || lowerContent.includes('algebra') || lowerContent.includes('homework')) {
+    return `I'd love to help you with your math studies! Mathematics beautifully reflects God's perfect order and design throughout creation. When we solve equations, we're discovering the logical relationships that God built into reality itself.
+
+What specific math concept are you working on? Whether it's algebra, geometry, or another area, I'm here to walk through it step by step with you. Remember, Proverbs tells us that "the beginning of wisdom is the fear of the Lord" - and that includes using our minds to understand His mathematical design!
+
+What particular problem or concept would you like to explore together?`;
+  } else if (lowerContent.includes('bible') || lowerContent.includes('god') || lowerContent.includes('jesus') || lowerContent.includes('faith')) {
+    return `What a wonderful question about faith! I'm excited to explore God's Word with you. The Bible is our ultimate source of truth and wisdom, and Jesus said "Ask and it will be given to you; seek and you will find; knock and the door will be opened to you" (Matthew 7:7).
+
+God's Word has so much to teach us about life, character, and how to live in a way that honors Him. Whether you're curious about a specific Bible verse, want to understand a biblical principle, or are seeking guidance on how faith applies to your daily life, I'm here to help.
+
+What specific aspect of faith or Scripture would you like to dive into together?`;
+  } else if (lowerContent.includes('friend') || lowerContent.includes('relationship') || lowerContent.includes('social')) {
+    return `Relationships and friendships are such an important part of life, and God has a lot to say about how we should treat others! The Bible teaches us to "love one another as I have loved you" (John 13:34) and to be the kind of friend we'd want to have ourselves.
+
+Whether you're navigating friendship challenges, wondering how to be a better friend, or thinking about relationships in general, remember that God desires us to build connections that honor Him and help us grow in character.
+
+What's on your heart about friendships or relationships? I'd love to help you think through it with biblical wisdom and practical guidance.`;
+  } else if (lowerContent.includes('science') || lowerContent.includes('nature') || lowerContent.includes('creation')) {
+    return `Science is amazing - it's one of the ways we get to explore and understand God's incredible creation! From the smallest atoms to the vastness of space, everything displays His wisdom, power, and creativity. As Psalm 19:1 says, "The heavens declare the glory of God; the skies proclaim the work of his hands."
+
+Whether you're studying biology, chemistry, physics, or earth science, you're discovering the intricate designs and laws that God established. Science helps us understand HOW God's creation works, while the Bible tells us WHO created it and WHY.
+
+What area of science are you curious about? I'd love to help you see both the scientific principles and the amazing way they point to our Creator!`;
+  } else {
+    return `I'm here to help you grow in wisdom and knowledge while keeping Christ at the center of our conversations! Whether you have questions about your studies, faith, relationships, or life in general, I want to provide guidance that's both practical and rooted in biblical truth.
+
+God has given you a wonderful mind and heart, and I'm excited to explore whatever questions or topics you're thinking about. The Bible reminds us that "if any of you lacks wisdom, you should ask God, who gives generously to all without finding fault, and it will be given to you" (James 1:5).
+
+What's on your mind today? What would you like to learn about or discuss?`;
+  }
+}
+
 // Content filtering and safety functions
 async function checkContentSafety(content: string, parentalControls: any): Promise<{ isSafe: boolean, reason?: string, alertType?: string }> {
   const lowerContent = content.toLowerCase()
@@ -541,18 +581,8 @@ app.post('/api/conversations/:conversationId/messages', async (c) => {
         alertType = safetyCheck.alertType
       }
       
-      // Generate basic AI response
-      if (!isFlagged) {
-        if (content.toLowerCase().includes('math') || content.toLowerCase().includes('homework')) {
-          aiResponse = "I'd be happy to help with your studies! Remember that God has given us minds to learn and grow. Let's work through this together step by step. What specific part would you like help with?"
-        } else if (content.toLowerCase().includes('bible') || content.toLowerCase().includes('god')) {
-          aiResponse = "That's a wonderful question about faith! The Bible tells us to 'seek and you will find' (Matthew 7:7). Let's explore this together and see what God's Word teaches us about this topic."
-        } else {
-          aiResponse = "I understand you're looking for guidance. As your AI companion, I'm here to help you grow in wisdom and knowledge while keeping Christ at the center of our conversations."
-        }
-      } else {
-        aiResponse = "I notice you might be going through something difficult. Remember that God loves you deeply, and there are people who care about you. If you're struggling, please talk to a trusted adult like your parents, a teacher, or a counselor. Is there something positive I can help you with instead?"
-      }
+      // Generate enhanced AI response
+      aiResponse = generateEnhancedFallback(content, isFlagged)
     }
     
     // Send safety alert to parent if needed
