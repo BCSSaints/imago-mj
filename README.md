@@ -6,8 +6,9 @@
 - **Features**: Custom AI tutors, content filtering, chat monitoring, safety alerts, and theological perspective customization
 
 ## URLs
+- **Production**: https://e0ffa1a2.teen-ai-platform.pages.dev
 - **Development**: https://3000-ixygycgdayoc8030t797e-6532622b.e2b.dev
-- **GitHub**: (Ready for repository setup)
+- **GitHub**: https://github.com/BCSSaints/imago-mj
 
 ## Key Features Implemented ✅
 
@@ -164,11 +165,16 @@
 4. **Professional Counselor Network**: Integration with Christian counseling resources
 
 ## Deployment Status
-- **Platform**: Cloudflare Pages (Ready for deployment)
-- **Database**: Cloudflare D1 (Local development configured)
-- **Status**: ✅ Core features complete and tested
+- **Platform**: ✅ Cloudflare Pages (Live in production)
+- **Database**: ✅ Cloudflare D1 (Production & local development)
+- **Status**: ✅ Production-ready with advanced features
 - **Tech Stack**: Hono + TypeScript + TailwindCSS + Cloudflare D1
-- **Last Updated**: January 2024
+- **Last Updated**: September 2024
+
+### Demo Credentials
+- **Parent Account**: demo@teenai.com
+- **Teen Account**: teen@teenai.com
+- **Quick Setup**: Visit the production URL and use the demo initialization endpoint
 
 ## Values and Mission
 
