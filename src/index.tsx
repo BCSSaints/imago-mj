@@ -273,22 +273,25 @@ app.get('/api/custom-gpts', async (c) => {
     return c.json({ error: 'Authentication required' }, 401)
   }
   
-  const user = await validateSession(env.DB, sessionId)
-  if (!user) {
-    return c.json({ error: 'Invalid session' }, 401)
+  try {
+    const db = new DatabaseService(env.DB)
+    const user = await db.validateSession(sessionId)
+    
+    if (!user) {
+      return c.json({ error: 'Invalid session' }, 401)
+    }
+    
+    let parentId = user.id
+    if (user.role === 'teen') {
+      parentId = user.parent_id
+    }
+    
+    const gpts = await db.getCustomGPTsByParent(parentId)
+    return c.json(gpts.results || [])
+  } catch (error) {
+    console.error('Failed to get custom GPTs:', error)
+    return c.json({ error: 'Failed to load AI assistants' }, 500)
   }
-  
-  let parentId = user.id
-  if (user.role === 'teen') {
-    parentId = user.parent_id
-  }
-  
-  const gpts = await env.DB.prepare(`
-    SELECT * FROM custom_gpts WHERE parent_id = ? AND is_active = TRUE
-    ORDER BY created_at DESC
-  `).bind(parentId).all()
-  
-  return c.json(gpts.results)
 })
 
 app.post('/api/custom-gpts', async (c) => {
@@ -299,40 +302,44 @@ app.post('/api/custom-gpts', async (c) => {
     return c.json({ error: 'Authentication required' }, 401)
   }
   
-  const user = await validateSession(env.DB, sessionId)
-  if (!user || user.role !== 'parent') {
-    return c.json({ error: 'Parent access required' }, 403)
-  }
-  
-  const { 
-    name, 
-    description, 
-    systemPrompt, 
-    theologicalValues = {},
-    educationalFocus = [],
-    personalityTraits = 'encouraging,wise,patient'
-  } = await c.req.json()
-  
-  if (!name || !systemPrompt) {
-    return c.json({ error: 'Name and system prompt required' }, 400)
-  }
-  
-  const gptId = generateId()
-  
   try {
-    await env.DB.prepare(`
-      INSERT INTO custom_gpts (
-        id, parent_id, name, description, system_prompt,
-        theological_values, educational_focus, personality_traits
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      gptId, user.id, name, description, systemPrompt,
-      JSON.stringify(theologicalValues), JSON.stringify(educationalFocus), personalityTraits
-    ).run()
+    const db = new DatabaseService(env.DB)
+    const user = await db.validateSession(sessionId)
+    
+    if (!user || user.role !== 'parent') {
+      return c.json({ error: 'Parent access required' }, 403)
+    }
+    
+    const { 
+      name, 
+      description, 
+      systemPrompt, 
+      theologicalValues = {},
+      educationalFocus = [],
+      personalityTraits = 'encouraging,wise,patient'
+    } = await c.req.json()
+    
+    if (!name || !systemPrompt) {
+      return c.json({ error: 'Name and system prompt required' }, 400)
+    }
+    
+    const gptId = generateId()
+    
+    await db.createCustomGPT({
+      id: gptId,
+      parentId: user.id,
+      name,
+      description: description || '',
+      systemPrompt,
+      theologicalValues: JSON.stringify(theologicalValues),
+      educationalFocus: JSON.stringify(educationalFocus),
+      personalityTraits
+    })
     
     return c.json({ success: true, id: gptId })
   } catch (error) {
-    return c.json({ error: 'Failed to create custom GPT' }, 500)
+    console.error('Failed to create custom GPT:', error)
+    return c.json({ error: 'Failed to create custom GPT: ' + error.message }, 500)
   }
 })
 
