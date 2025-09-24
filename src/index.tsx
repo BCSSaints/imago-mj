@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
+import { AIService } from './services/aiService'
+import { DatabaseService } from './services/databaseService'
 
 type Bindings = {
   DB: D1Database;
@@ -25,30 +27,6 @@ function generateId(): string {
 function isValidEmail(email: string): boolean {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   return emailRegex.test(email)
-}
-
-async function createSession(db: D1Database, userId: string): Promise<string> {
-  const sessionId = generateId()
-  const expiresAt = new Date()
-  expiresAt.setDate(expiresAt.getDate() + 30) // 30 days
-  
-  await db.prepare(`
-    INSERT INTO sessions (id, user_id, expires_at)
-    VALUES (?, ?, ?)
-  `).bind(sessionId, userId, expiresAt.toISOString()).run()
-  
-  return sessionId
-}
-
-async function validateSession(db: D1Database, sessionId: string): Promise<any> {
-  const result = await db.prepare(`
-    SELECT u.*, s.id as session_id
-    FROM users u
-    JOIN sessions s ON u.id = s.user_id
-    WHERE s.id = ? AND s.expires_at > datetime('now')
-  `).bind(sessionId).first()
-  
-  return result
 }
 
 // Content filtering and safety functions
@@ -111,6 +89,7 @@ app.post('/api/auth/register', async (c) => {
   }
   
   try {
+    const db = new DatabaseService(env.DB)
     const userId = generateId()
     let parentId = null
     
@@ -119,23 +98,33 @@ app.post('/api/auth/register', async (c) => {
         return c.json({ error: 'Parent email required for teen accounts' }, 400)
       }
       
-      const parent = await env.DB.prepare(`
-        SELECT id FROM users WHERE email = ? AND role = 'parent'
-      `).bind(parentEmail).first()
+      const parent = await db.getUserByEmail(parentEmail)
       
-      if (!parent) {
+      if (!parent || parent.role !== 'parent') {
         return c.json({ error: 'Parent account not found' }, 404)
       }
       
       parentId = parent.id
     }
     
-    await env.DB.prepare(`
-      INSERT INTO users (id, email, name, role, parent_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).bind(userId, email, name, role, parentId).run()
+    await db.createUser({
+      id: userId,
+      email,
+      name,
+      role,
+      parentId
+    })
     
-    const sessionId = await createSession(env.DB, userId)
+    // Create session
+    const sessionId = generateId()
+    const expiresAt = new Date()
+    expiresAt.setDate(expiresAt.getDate() + 30) // 30 days
+    
+    await db.createSession({
+      id: sessionId,
+      userId,
+      expiresAt: expiresAt.toISOString()
+    })
     
     return c.json({ 
       success: true, 
@@ -143,6 +132,7 @@ app.post('/api/auth/register', async (c) => {
       sessionId 
     })
   } catch (error: any) {
+    console.error('Registration error:', error)
     if (error.message?.includes('UNIQUE constraint failed')) {
       return c.json({ error: 'Email already registered' }, 409)
     }
@@ -158,27 +148,40 @@ app.post('/api/auth/login', async (c) => {
     return c.json({ error: 'Valid email required' }, 400)
   }
   
-  const user = await env.DB.prepare(`
-    SELECT * FROM users WHERE email = ? AND is_active = TRUE
-  `).bind(email).first()
-  
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404)
+  try {
+    const db = new DatabaseService(env.DB)
+    const user = await db.getUserByEmail(email)
+    
+    if (!user) {
+      return c.json({ error: 'User not found' }, 404)
+    }
+    
+    // Create session
+    const sessionId = generateId()
+    const expiresAt = new Date()
+    expiresAt.setDate(expiresAt.getDate() + 30) // 30 days
+    
+    await db.createSession({
+      id: sessionId,
+      userId: user.id as string,
+      expiresAt: expiresAt.toISOString()
+    })
+    
+    return c.json({ 
+      success: true, 
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        name: user.name, 
+        role: user.role, 
+        parentId: user.parent_id 
+      },
+      sessionId 
+    })
+  } catch (error) {
+    console.error('Login error:', error)
+    return c.json({ error: 'Login failed' }, 500)
   }
-  
-  const sessionId = await createSession(env.DB, user.id as string)
-  
-  return c.json({ 
-    success: true, 
-    user: { 
-      id: user.id, 
-      email: user.email, 
-      name: user.name, 
-      role: user.role, 
-      parentId: user.parent_id 
-    },
-    sessionId 
-  })
 })
 
 // Parental controls routes
@@ -458,7 +461,9 @@ app.post('/api/conversations/:conversationId/messages', async (c) => {
     return c.json({ error: 'Authentication required' }, 401)
   }
   
-  const user = await validateSession(env.DB, sessionId)
+  const db = new DatabaseService(env.DB)
+  const user = await db.validateSession(sessionId)
+  
   if (!user || user.role !== 'teen') {
     return c.json({ error: 'Teen access required' }, 403)
   }
@@ -469,88 +474,123 @@ app.post('/api/conversations/:conversationId/messages', async (c) => {
     return c.json({ error: 'Message content required' }, 400)
   }
   
-  // Verify teen owns this conversation
-  const conversation = await env.DB.prepare(`
-    SELECT * FROM conversations WHERE id = ? AND teen_id = ?
-  `).bind(conversationId, user.id).first()
+  // Verify teen owns this conversation and get conversation details
+  const conversation = await db.getConversationById(conversationId)
   
-  if (!conversation) {
+  if (!conversation || conversation.teen_id !== user.id) {
     return c.json({ error: 'Conversation not found' }, 404)
   }
   
   // Get parental controls
-  const parentalControls = await env.DB.prepare(`
-    SELECT * FROM parental_controls WHERE teen_id = ?
-  `).bind(user.id).first()
+  const parentalControls = await db.getParentalControlsByTeen(user.id)
   
   if (!parentalControls) {
     return c.json({ error: 'Parental controls not configured' }, 400)
   }
   
-  // Check content safety
-  const safetyCheck = await checkContentSafety(content, parentalControls)
+  // Get conversation history for context
+  const recentMessages = await db.getRecentMessagesByConversation(conversationId, 10)
+  const conversationHistory = recentMessages.results?.reverse() || []
   
   const messageId = generateId()
-  let isFlagged = false
-  let flagReason = null
   
-  if (!safetyCheck.isSafe) {
-    isFlagged = true
-    flagReason = safetyCheck.reason
+  try {
+    // Initialize AI service (use placeholder if no API key)
+    let aiResponse;
+    let isFlagged = false;
+    let flagReason = null;
+    let alertType = null;
     
-    // Send safety alert to parent if enabled
-    if (parentalControls.safety_alerts_enabled && user.parent_id) {
-      await sendSafetyAlert(
-        env.DB, user.parent_id, user.id, conversationId, 
-        messageId, safetyCheck.alertType!, safetyCheck.reason!
-      )
+    if (env.OPENAI_API_KEY) {
+      // Use real AI service
+      const aiService = new AIService(env.OPENAI_API_KEY);
+      const aiResult = await aiService.generateResponse(
+        content,
+        {
+          id: conversation.custom_gpt_id,
+          name: conversation.gpt_name,
+          system_prompt: conversation.system_prompt,
+          theological_values: conversation.theological_values,
+          personality_traits: conversation.personality_traits
+        },
+        parentalControls,
+        conversationHistory
+      );
+      
+      aiResponse = aiResult.content;
+      isFlagged = !aiResult.isSafe;
+      flagReason = aiResult.flagReason;
+      alertType = aiResult.alertType;
+    } else {
+      // Fallback to simple content check and basic responses
+      const safetyCheck = await checkContentSafety(content, parentalControls)
+      
+      if (!safetyCheck.isSafe) {
+        isFlagged = true
+        flagReason = safetyCheck.reason
+        alertType = safetyCheck.alertType
+      }
+      
+      // Generate basic AI response
+      if (!isFlagged) {
+        if (content.toLowerCase().includes('math') || content.toLowerCase().includes('homework')) {
+          aiResponse = "I'd be happy to help with your studies! Remember that God has given us minds to learn and grow. Let's work through this together step by step. What specific part would you like help with?"
+        } else if (content.toLowerCase().includes('bible') || content.toLowerCase().includes('god')) {
+          aiResponse = "That's a wonderful question about faith! The Bible tells us to 'seek and you will find' (Matthew 7:7). Let's explore this together and see what God's Word teaches us about this topic."
+        } else {
+          aiResponse = "I understand you're looking for guidance. As your AI companion, I'm here to help you grow in wisdom and knowledge while keeping Christ at the center of our conversations."
+        }
+      } else {
+        aiResponse = "I notice you might be going through something difficult. Remember that God loves you deeply, and there are people who care about you. If you're struggling, please talk to a trusted adult like your parents, a teacher, or a counselor. Is there something positive I can help you with instead?"
+      }
     }
-  }
-  
-  // Save user message
-  await env.DB.prepare(`
-    INSERT INTO messages (id, conversation_id, role, content, is_flagged, flag_reason)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).bind(messageId, conversationId, 'user', content, isFlagged, flagReason).run()
-  
-  // Generate AI response (simplified for now)
-  const customGpt = await env.DB.prepare(`
-    SELECT cg.* FROM custom_gpts cg
-    JOIN conversations c ON c.custom_gpt_id = cg.id
-    WHERE c.id = ?
-  `).bind(conversationId).first()
-  
-  let aiResponse = "I understand you're looking for guidance. As your AI companion, I'm here to help you grow in wisdom and knowledge while keeping Christ at the center of our conversations."
-  
-  if (!isFlagged && customGpt) {
-    // Here you would integrate with OpenAI API using the custom GPT system prompt
-    // For now, using a simple response based on the theological perspective
-    if (content.toLowerCase().includes('math') || content.toLowerCase().includes('homework')) {
-      aiResponse = "I'd be happy to help with your studies! Remember that God has given us minds to learn and grow. Let's work through this together step by step. What specific part would you like help with?"
-    } else if (content.toLowerCase().includes('bible') || content.toLowerCase().includes('god')) {
-      aiResponse = "That's a wonderful question about faith! The Bible tells us to 'seek and you will find' (Matthew 7:7). Let's explore this together and see what God's Word teaches us about this topic."
+    
+    // Send safety alert to parent if needed
+    if (isFlagged && parentalControls.safety_alerts_enabled && user.parent_id) {
+      const alertId = generateId()
+      await db.createSafetyAlert({
+        id: alertId,
+        parentId: user.parent_id,
+        teenId: user.id,
+        conversationId,
+        messageId,
+        alertType: alertType!,
+        alertReason: flagReason!
+      })
     }
-  } else if (isFlagged) {
-    aiResponse = "I notice you might be going through something difficult. Remember that God loves you deeply, and there are people who care about you. If you're struggling, please talk to a trusted adult like your parents, a teacher, or a counselor. Is there something positive I can help you with instead?"
+    
+    // Save user message
+    await db.createMessage({
+      id: messageId,
+      conversationId,
+      role: 'user',
+      content,
+      isFlagged,
+      flagReason
+    })
+    
+    // Save AI response
+    const aiMessageId = generateId()
+    await db.createMessage({
+      id: aiMessageId,
+      conversationId,
+      role: 'assistant',
+      content: aiResponse
+    })
+    
+    // Update conversation timestamp
+    await db.updateConversationTimestamp(conversationId)
+    
+    return c.json({ 
+      success: true, 
+      userMessage: { id: messageId, content, isFlagged },
+      aiMessage: { id: aiMessageId, content: aiResponse }
+    })
+    
+  } catch (error) {
+    console.error('Error processing message:', error)
+    return c.json({ error: 'Failed to process message' }, 500)
   }
-  
-  // Save AI response
-  const aiMessageId = generateId()
-  await env.DB.prepare(`
-    INSERT INTO messages (id, conversation_id, role, content)
-    VALUES (?, ?, ?, ?)
-  `).bind(aiMessageId, conversationId, 'assistant', aiResponse).run()
-  
-  // Update conversation timestamp
-  await env.DB.prepare(`
-    UPDATE conversations SET updated_at = datetime('now') WHERE id = ?
-  `).bind(conversationId).run()
-  
-  return c.json({ 
-    success: true, 
-    userMessage: { id: messageId, content, isFlagged },
-    aiMessage: { id: aiMessageId, content: aiResponse }
-  })
 })
 
 // Safety alerts routes
@@ -598,6 +638,154 @@ app.post('/api/safety-alerts/:alertId/mark-read', async (c) => {
   `).bind(alertId, user.id).run()
   
   return c.json({ success: true })
+})
+
+// Analytics and dashboard routes
+app.get('/api/analytics/dashboard/:teenId', async (c) => {
+  const { env } = c
+  const teenId = c.req.param('teenId')
+  const sessionId = c.req.header('Authorization')?.replace('Bearer ', '')
+  
+  if (!sessionId) {
+    return c.json({ error: 'Authentication required' }, 401)
+  }
+  
+  try {
+    const db = new DatabaseService(env.DB)
+    const user = await db.validateSession(sessionId)
+    
+    if (!user || user.role !== 'parent') {
+      return c.json({ error: 'Parent access required' }, 403)
+    }
+    
+    // Verify parent owns this teen
+    const teen = await db.getUserById(teenId)
+    if (!teen || teen.parent_id !== user.id) {
+      return c.json({ error: 'Teen not found or access denied' }, 404)
+    }
+    
+    // Get analytics data
+    const stats = await db.getConversationStats(teenId, 30)
+    const unreadAlerts = await db.getUnreadAlertCount(user.id)
+    const recentConversations = await db.getConversationsByTeen(teenId)
+    const recentAlerts = await db.getSafetyAlertsByParent(user.id)
+    
+    // Get today's usage
+    const today = new Date().toISOString().split('T')[0]
+    const todayUsage = await db.getDailyUsageStats(teenId, today)
+    
+    return c.json({
+      teen: {
+        id: teen.id,
+        name: teen.name,
+        email: teen.email
+      },
+      stats,
+      todayUsage,
+      unreadAlerts,
+      recentConversations: recentConversations.results?.slice(0, 5) || [],
+      recentAlerts: recentAlerts.results?.slice(0, 5) || []
+    })
+  } catch (error) {
+    console.error('Analytics error:', error)
+    return c.json({ error: 'Failed to load analytics' }, 500)
+  }
+})
+
+app.get('/api/system/stats', async (c) => {
+  const { env } = c
+  const sessionId = c.req.header('Authorization')?.replace('Bearer ', '')
+  
+  if (!sessionId) {
+    return c.json({ error: 'Authentication required' }, 401)
+  }
+  
+  try {
+    const db = new DatabaseService(env.DB)
+    const user = await db.validateSession(sessionId)
+    
+    if (!user || user.role !== 'parent') {
+      return c.json({ error: 'Parent access required' }, 403)
+    }
+    
+    const stats = await db.getSystemStats()
+    return c.json(stats)
+  } catch (error) {
+    console.error('System stats error:', error)
+    return c.json({ error: 'Failed to load system stats' }, 500)
+  }
+})
+
+// Database initialization route (for setting up demo data)
+app.post('/api/admin/init-demo', async (c) => {
+  const { env } = c
+  
+  try {
+    // Check if demo data already exists
+    const existingUser = await env.DB.prepare(`
+      SELECT id FROM users WHERE email = 'demo@teenai.com' LIMIT 1
+    `).first()
+    
+    if (existingUser) {
+      return c.json({ message: 'Demo data already exists' })
+    }
+    
+    // Create demo parent
+    const parentId = generateId()
+    await env.DB.prepare(`
+      INSERT INTO users (id, email, name, role)
+      VALUES (?, ?, ?, ?)
+    `).bind(parentId, 'demo@teenai.com', 'Demo Parent', 'parent').run()
+    
+    // Create demo teen
+    const teenId = generateId()
+    await env.DB.prepare(`
+      INSERT INTO users (id, email, name, role, parent_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(teenId, 'teen@teenai.com', 'Demo Teen', 'teen', parentId).run()
+    
+    // Create parental controls
+    const controlsId = generateId()
+    await env.DB.prepare(`
+      INSERT INTO parental_controls (
+        id, parent_id, teen_id, theological_perspective, content_filter_level,
+        allowed_topics, blocked_keywords, safety_alerts_enabled, chat_review_required
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      controlsId, parentId, teenId, 'conservative-christian', 'strict',
+      '["bible-study", "school-help", "life-advice", "science", "history"]',
+      '["inappropriate", "violence", "drugs"]',
+      true, true
+    ).run()
+    
+    // Create demo custom GPT
+    const gptId = generateId()
+    await env.DB.prepare(`
+      INSERT INTO custom_gpts (
+        id, parent_id, name, description, system_prompt, 
+        theological_values, educational_focus, personality_traits
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      gptId, parentId, 'Demo Christian Tutor',
+      'A wise Christian mentor for academic and spiritual guidance',
+      'You are a Christian AI tutor designed to help teenagers grow in wisdom and knowledge. Approach every question through a biblical worldview, emphasizing God\'s love and truth.',
+      '{"biblical_authority": "high", "moral_framework": "biblical"}',
+      '["mathematics", "science", "biblical_studies"]',
+      'encouraging,wise,patient,christ_centered'
+    ).run()
+    
+    return c.json({ 
+      success: true, 
+      message: 'Demo data created successfully',
+      credentials: {
+        parent: 'demo@teenai.com',
+        teen: 'teen@teenai.com'
+      }
+    })
+  } catch (error) {
+    console.error('Demo init error:', error)
+    return c.json({ error: 'Failed to initialize demo data' }, 500)
+  }
 })
 
 // Default route - Main application

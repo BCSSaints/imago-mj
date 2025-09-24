@@ -196,6 +196,11 @@ class TeenAIApp {
         });
         this.renderChat();
 
+        // Speak the AI response if voice mode is available
+        if (voiceMode && voiceMode.synthesis) {
+          voiceMode.speak(result.aiMessage.content);
+        }
+
         if (result.userMessage.isFlagged) {
           this.showWarning('Your message has been flagged for review. A parent will be notified.');
         }
@@ -867,8 +872,158 @@ function openConversation(conversationId, title, customGptId) {
   app.loadConversationMessages(conversationId);
 }
 
+// Voice Mode Implementation
+class VoiceMode {
+  constructor() {
+    this.isRecording = false;
+    this.recognition = null;
+    this.synthesis = window.speechSynthesis;
+    this.currentVoice = null;
+    
+    this.initializeSpeechRecognition();
+    this.initializeSpeechSynthesis();
+  }
+
+  initializeSpeechRecognition() {
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      this.recognition = new SpeechRecognition();
+      
+      this.recognition.continuous = false;
+      this.recognition.interimResults = false;
+      this.recognition.lang = 'en-US';
+      
+      this.recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        this.handleSpeechResult(transcript);
+      };
+      
+      this.recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        this.stopRecording();
+        app.showError('Voice recognition failed: ' + event.error);
+      };
+      
+      this.recognition.onend = () => {
+        this.stopRecording();
+      };
+    }
+  }
+
+  initializeSpeechSynthesis() {
+    if ('speechSynthesis' in window) {
+      // Wait for voices to load
+      const loadVoices = () => {
+        const voices = this.synthesis.getVoices();
+        // Prefer female voices for a nurturing feel
+        this.currentVoice = voices.find(voice => 
+          voice.name.includes('Female') || 
+          voice.name.includes('Samantha') ||
+          voice.name.includes('Karen')
+        ) || voices[0];
+      };
+      
+      if (speechSynthesis.onvoiceschanged !== undefined) {
+        speechSynthesis.onvoiceschanged = loadVoices;
+      } else {
+        loadVoices();
+      }
+    }
+  }
+
+  startRecording() {
+    if (!this.recognition) {
+      app.showError('Voice recognition not supported in this browser');
+      return false;
+    }
+
+    this.isRecording = true;
+    this.updateVoiceButton(true);
+    
+    try {
+      this.recognition.start();
+      return true;
+    } catch (error) {
+      console.error('Failed to start recording:', error);
+      this.stopRecording();
+      return false;
+    }
+  }
+
+  stopRecording() {
+    if (this.recognition && this.isRecording) {
+      this.recognition.stop();
+    }
+    this.isRecording = false;
+    this.updateVoiceButton(false);
+  }
+
+  handleSpeechResult(transcript) {
+    console.log('Voice input:', transcript);
+    
+    // Insert the transcript into the message input
+    const messageInput = document.getElementById('messageInput');
+    if (messageInput) {
+      messageInput.value = transcript;
+      messageInput.focus();
+    }
+  }
+
+  speak(text) {
+    if (!this.synthesis || !text) return;
+
+    // Stop any current speech
+    this.synthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    
+    if (this.currentVoice) {
+      utterance.voice = this.currentVoice;
+    }
+    
+    utterance.rate = 0.9; // Slightly slower for clarity
+    utterance.pitch = 1.0;
+    utterance.volume = 0.8;
+    
+    // Add some personality to the voice
+    utterance.onstart = () => {
+      console.log('AI speaking...');
+    };
+    
+    utterance.onend = () => {
+      console.log('AI finished speaking');
+    };
+    
+    this.synthesis.speak(utterance);
+  }
+
+  updateVoiceButton(isRecording) {
+    const voiceBtn = document.querySelector('[onclick="startVoiceMode()"]');
+    if (voiceBtn) {
+      if (isRecording) {
+        voiceBtn.innerHTML = '<i class="fas fa-stop mr-2"></i>Stop';
+        voiceBtn.className = voiceBtn.className.replace('bg-blue-500/20 hover:bg-blue-500/30', 'bg-red-500/20 hover:bg-red-500/30 recording');
+      } else {
+        voiceBtn.innerHTML = '<i class="fas fa-microphone mr-2"></i>Voice';
+        voiceBtn.className = voiceBtn.className.replace('bg-red-500/20 hover:bg-red-500/30 recording', 'bg-blue-500/20 hover:bg-blue-500/30');
+      }
+    }
+  }
+
+  toggle() {
+    if (this.isRecording) {
+      this.stopRecording();
+    } else {
+      this.startRecording();
+    }
+  }
+}
+
+// Initialize voice mode
+const voiceMode = new VoiceMode();
+
 function startVoiceMode() {
-  alert('Voice mode will be available in the next update!');
+  voiceMode.toggle();
 }
 
 async function markAlertRead(alertId) {
