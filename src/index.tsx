@@ -352,37 +352,29 @@ app.get('/api/conversations', async (c) => {
     return c.json({ error: 'Authentication required' }, 401)
   }
   
-  const user = await validateSession(env.DB, sessionId)
-  if (!user) {
-    return c.json({ error: 'Invalid session' }, 401)
+  try {
+    const db = new DatabaseService(env.DB)
+    const user = await db.validateSession(sessionId)
+    
+    if (!user) {
+      return c.json({ error: 'Invalid session' }, 401)
+    }
+    
+    let conversations
+    
+    if (user.role === 'parent') {
+      // Parents can see all conversations of their teens
+      conversations = await db.getConversationsByParent(user.id)
+    } else {
+      // Teens can only see their own conversations
+      conversations = await db.getConversationsByTeen(user.id)
+    }
+    
+    return c.json(conversations.results || [])
+  } catch (error) {
+    console.error('Failed to get conversations:', error)
+    return c.json({ error: 'Failed to load conversations' }, 500)
   }
-  
-  let query = ''
-  let userId = user.id
-  
-  if (user.role === 'parent') {
-    // Parents can see all conversations of their teens
-    query = `
-      SELECT c.*, u.name as teen_name, cg.name as gpt_name
-      FROM conversations c
-      JOIN users u ON c.teen_id = u.id
-      JOIN custom_gpts cg ON c.custom_gpt_id = cg.id
-      WHERE u.parent_id = ?
-      ORDER BY c.updated_at DESC
-    `
-  } else {
-    // Teens can only see their own conversations
-    query = `
-      SELECT c.*, cg.name as gpt_name
-      FROM conversations c
-      JOIN custom_gpts cg ON c.custom_gpt_id = cg.id
-      WHERE c.teen_id = ?
-      ORDER BY c.updated_at DESC
-    `
-  }
-  
-  const conversations = await env.DB.prepare(query).bind(userId).all()
-  return c.json(conversations.results)
 })
 
 app.post('/api/conversations', async (c) => {
@@ -393,28 +385,39 @@ app.post('/api/conversations', async (c) => {
     return c.json({ error: 'Authentication required' }, 401)
   }
   
-  const user = await validateSession(env.DB, sessionId)
-  if (!user || user.role !== 'teen') {
-    return c.json({ error: 'Teen access required' }, 403)
-  }
-  
-  const { customGptId, title } = await c.req.json()
-  
-  if (!customGptId || !title) {
-    return c.json({ error: 'Custom GPT ID and title required' }, 400)
-  }
-  
-  const conversationId = generateId()
-  
   try {
-    await env.DB.prepare(`
-      INSERT INTO conversations (id, teen_id, custom_gpt_id, title)
-      VALUES (?, ?, ?, ?)
-    `).bind(conversationId, user.id, customGptId, title).run()
+    const db = new DatabaseService(env.DB)
+    const user = await db.validateSession(sessionId)
+    
+    if (!user || user.role !== 'teen') {
+      return c.json({ error: 'Teen access required' }, 403)
+    }
+    
+    const { customGptId, title } = await c.req.json()
+    
+    if (!customGptId || !title) {
+      return c.json({ error: 'Custom GPT ID and title required' }, 400)
+    }
+    
+    // Verify the custom GPT exists and belongs to the teen's parent
+    const customGpt = await db.getCustomGPTById(customGptId)
+    if (!customGpt || customGpt.parent_id !== user.parent_id) {
+      return c.json({ error: 'AI assistant not found or not authorized' }, 404)
+    }
+    
+    const conversationId = generateId()
+    
+    await db.createConversation({
+      id: conversationId,
+      teenId: user.id,
+      customGptId,
+      title
+    })
     
     return c.json({ success: true, id: conversationId })
   } catch (error) {
-    return c.json({ error: 'Failed to create conversation' }, 500)
+    console.error('Failed to create conversation:', error)
+    return c.json({ error: 'Failed to create conversation: ' + error.message }, 500)
   }
 })
 
